@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TripTracker</string>
+    <string name="server_url">Server URL</string>
+    <string name="server_url_hint">https://example.com or http://192.168.1.10:8080</string>
+    <string name="token">Access token (TRIPTRACKER_TOKEN, optional)</string>
+    <string name="start">Start journey</string>
+    <string name="stop">Stop – I\'ve arrived safely</string>
+    <string name="reliability">Background &amp; battery settings</string>
+    <string name="help">While a journey is running, your location is sent every minute, even when the app is closed or the phone is locked. With no signal, it retries every minute and sends anything it missed once it reconnects.\n\nFor best reliability, allow location \"All the time\" and turn off battery optimisation for TripTracker.</string>
+</resources>

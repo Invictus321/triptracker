@@ -1,0 +1,34 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.invictus321.triptracker'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.invictus321.triptracker'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with the local debug key so the APK can be side-loaded without extra setup.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    lint {
+        // Release lint findings are reported but shouldn't block side-loaded builds.
+        abortOnError false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
