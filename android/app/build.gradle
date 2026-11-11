@@ -5,6 +5,7 @@ plugins {
 android {
     namespace 'com.invictus321.triptracker'
     compileSdk 35
+    buildToolsVersion '35.0.0'
 
     defaultConfig {
         applicationId 'com.invictus321.triptracker'
