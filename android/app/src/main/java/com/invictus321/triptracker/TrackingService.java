@@ -230,7 +230,8 @@ public class TrackingService extends Service implements LocationListener {
         }
         String base = Prefs.normalizeBaseUrl(prefs.getString(Prefs.URL, ""));
         if (base == null) {
-            setStatus("Set the server URL in the app – " + outbox.size() + " update(s) waiting");
+            setStatus("Set the server URL (starting http:// or https://) in the app – "
+                    + outbox.size() + " update(s) waiting");
             return;
         }
         String token = prefs.getString(Prefs.TOKEN, "").trim();
@@ -241,7 +242,8 @@ public class TrackingService extends Service implements LocationListener {
                 code = post(base + item.optString("path"), item.optJSONObject("body"), token);
             } catch (IOException e) {
                 Log.i(TAG, "send failed: " + e);
-                setStatus("No connection – retrying every minute (" + outbox.size() + " waiting)");
+                setStatus("Can't reach server (" + e.getClass().getSimpleName() + ": " + e.getMessage()
+                        + ") – retrying every minute, " + outbox.size() + " waiting");
                 return;
             }
             if (code >= 200 && code < 300) {

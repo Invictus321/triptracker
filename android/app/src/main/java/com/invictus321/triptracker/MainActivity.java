@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
     private void onStartClicked() {
         saveSettings();
         if (Prefs.normalizeBaseUrl(serverUrl.getText().toString()) == null) {
-            serverUrl.setError("Enter the map server URL");
+            serverUrl.setError("Enter the full map URL including http:// or https://, e.g. http://1.2.3.4:8080");
             serverUrl.requestFocus();
             return;
         }

@@ -25,7 +25,10 @@ final class Prefs {
         return context.getSharedPreferences("triptracker", Context.MODE_PRIVATE);
     }
 
-    /** Returns the server base URL without a trailing slash, or null if it is unusable. */
+    /**
+     * Returns the server base URL without a trailing slash, or null if it is unusable. The scheme
+     * must be explicit: guessing https breaks plain-http servers, and guessing http leaks location.
+     */
     static String normalizeBaseUrl(String raw) {
         if (raw == null) {
             return null;
@@ -38,7 +41,7 @@ final class Prefs {
             return null;
         }
         if (!s.startsWith("http://") && !s.startsWith("https://")) {
-            s = "https://" + s;
+            return null;
         }
         String host = Uri.parse(s).getHost();
         return host == null || host.isEmpty() ? null : s;
