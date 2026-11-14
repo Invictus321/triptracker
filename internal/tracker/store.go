@@ -1,4 +1,4 @@
-// Package tracker stores the current journey and serves it over HTTP.
+// Package tracker stores the journey history and serves it over HTTP.
 package tracker
 
 import (
@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -35,10 +36,16 @@ type Journey struct {
 	Points    []Point    `json:"points"`
 }
 
-// State is the snapshot served to map viewers.
+// State is the snapshot served to map viewers. Journeys are ordered oldest first; the last
+// one is the current journey.
 type State struct {
-	Journey    *Journey  `json:"journey"`
+	Journeys   []Journey `json:"journeys"`
 	ServerTime time.Time `json:"serverTime"`
+}
+
+// history is the on-disk format.
+type history struct {
+	Journeys []*Journey `json:"journeys"`
 }
 
 // ErrInvalidPoint is returned for out-of-range coordinates.
@@ -47,13 +54,13 @@ var ErrInvalidPoint = errors.New("invalid coordinates")
 // maxFutureSkew bounds how far ahead of the server clock a device timestamp may be.
 const maxFutureSkew = 5 * time.Minute
 
-// Store holds the current journey, persists it to disk and notifies subscribers of changes.
+// Store holds every journey, persists them to disk and notifies subscribers of changes.
 type Store struct {
-	mu      sync.Mutex
-	path    string
-	journey *Journey
-	subs    map[chan struct{}]struct{}
-	now     func() time.Time
+	mu       sync.Mutex
+	path     string
+	journeys []*Journey
+	subs     map[chan struct{}]struct{}
+	now      func() time.Time
 }
 
 // Open loads the store from path (if it exists). An empty path disables persistence.
@@ -69,9 +76,18 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &s.journey); err != nil {
+	var h history
+	if err := json.Unmarshal(data, &h); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if h.Journeys == nil {
+		// Files written before history was kept hold a single journey object.
+		var j Journey
+		if err := json.Unmarshal(data, &j); err == nil && j.ID != "" {
+			h.Journeys = []*Journey{&j}
+		}
+	}
+	s.journeys = h.Journeys
 	return s, nil
 }
 
@@ -79,29 +95,28 @@ func Open(path string) (*Store, error) {
 func (s *Store) Snapshot() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := State{ServerTime: s.now().UTC()}
-	if s.journey != nil {
-		j := *s.journey
-		j.Points = append([]Point(nil), s.journey.Points...)
-		st.Journey = &j
+	st := State{Journeys: make([]Journey, len(s.journeys)), ServerTime: s.now().UTC()}
+	for i, j := range s.journeys {
+		st.Journeys[i] = *j
+		st.Journeys[i].Points = slices.Clone(j.Points)
 	}
 	return st
 }
 
-// Start begins a new journey. It is idempotent for the current journey ID.
+// Start begins a new journey. It is idempotent for a journey ID that already exists.
 func (s *Store) Start(journeyID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if journeyID != "" && s.journey != nil && s.journey.ID == journeyID {
+	if journeyID != "" && s.findLocked(journeyID) != nil {
 		return nil
 	}
 	s.newJourneyLocked(journeyID)
 	return s.commitLocked()
 }
 
-// AddPoint records a location. A journeyID different from the current one starts a
-// new journey; an empty journeyID appends to the active journey (or starts one if the
-// last journey has ended).
+// AddPoint records a location. A known journeyID appends to that journey (late retries
+// never reopen an ended journey); an unknown one starts a new journey. An empty journeyID
+// appends to the active journey, or starts one if the last journey has ended.
 func (s *Store) AddPoint(journeyID string, p Point) error {
 	if math.IsNaN(p.Lat) || math.IsNaN(p.Lon) || p.Lat < -90 || p.Lat > 90 || p.Lon < -180 || p.Lon > 180 {
 		return ErrInvalidPoint
@@ -119,12 +134,15 @@ func (s *Store) AddPoint(journeyID string, p Point) error {
 	}
 	p.Time = p.Time.UTC()
 
-	if s.journey == nil ||
-		(journeyID != "" && s.journey.ID != journeyID) ||
-		(journeyID == "" && s.journey.Ended) {
-		s.newJourneyLocked(journeyID)
+	var j *Journey
+	if journeyID != "" {
+		j = s.findLocked(journeyID)
+	} else if cur := s.currentLocked(); cur != nil && !cur.Ended {
+		j = cur
 	}
-	j := s.journey
+	if j == nil {
+		j = s.newJourneyLocked(journeyID)
+	}
 	j.LastSeen = &now
 
 	// Retries may resend a point the server already has; only refresh LastSeen.
@@ -145,15 +163,19 @@ func (s *Store) AddPoint(journeyID string, p Point) error {
 func (s *Store) Stop(journeyID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.journey == nil || (journeyID != "" && s.journey.ID != journeyID) {
+	j := s.currentLocked()
+	if journeyID != "" {
+		j = s.findLocked(journeyID)
+	}
+	if j == nil {
 		return false, nil
 	}
-	if s.journey.Ended {
+	if j.Ended {
 		return true, nil
 	}
 	now := s.now().UTC()
-	s.journey.Ended = true
-	s.journey.EndedAt = &now
+	j.Ended = true
+	j.EndedAt = &now
 	return true, s.commitLocked()
 }
 
@@ -170,11 +192,29 @@ func (s *Store) Subscribe() (<-chan struct{}, func()) {
 	}
 }
 
-func (s *Store) newJourneyLocked(id string) {
+func (s *Store) currentLocked() *Journey {
+	if len(s.journeys) == 0 {
+		return nil
+	}
+	return s.journeys[len(s.journeys)-1]
+}
+
+func (s *Store) findLocked(id string) *Journey {
+	for i := len(s.journeys) - 1; i >= 0; i-- {
+		if s.journeys[i].ID == id {
+			return s.journeys[i]
+		}
+	}
+	return nil
+}
+
+func (s *Store) newJourneyLocked(id string) *Journey {
 	if id == "" {
 		id = randomID()
 	}
-	s.journey = &Journey{ID: id, StartedAt: s.now().UTC(), Points: []Point{}}
+	j := &Journey{ID: id, StartedAt: s.now().UTC(), Points: []Point{}}
+	s.journeys = append(s.journeys, j)
+	return j
 }
 
 func (s *Store) commitLocked() error {
@@ -187,7 +227,7 @@ func (s *Store) commitLocked() error {
 	if s.path == "" {
 		return nil
 	}
-	data, err := json.MarshalIndent(s.journey, "", "  ")
+	data, err := json.Marshal(history{Journeys: s.journeys})
 	if err != nil {
 		return err
 	}

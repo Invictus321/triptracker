@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func TestAddPointOrdersAndDedupes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	j := s.Snapshot().Journey
+	j := current(t, s)
 	if len(j.Points) != 3 {
 		t.Fatalf("got %d points, want 3", len(j.Points))
 	}
@@ -53,7 +54,16 @@ func TestAddPointOrdersAndDedupes(t *testing.T) {
 	}
 }
 
-func TestStopAndNewJourney(t *testing.T) {
+func current(t *testing.T, s *Store) Journey {
+	t.Helper()
+	js := s.Snapshot().Journeys
+	if len(js) == 0 {
+		t.Fatal("no journeys")
+	}
+	return js[len(js)-1]
+}
+
+func TestHistoryKeptAcrossJourneys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journey.json")
 	s, _ := newTestStore(t, path)
 	if err := s.AddPoint("j1", Point{Lat: 1, Lon: 1}); err != nil {
@@ -65,26 +75,64 @@ func TestStopAndNewJourney(t *testing.T) {
 	if ended, err := s.Stop("j1"); err != nil || !ended {
 		t.Fatalf("stop: ended=%v err=%v", ended, err)
 	}
-
-	reloaded, _ := newTestStore(t, path)
-	if j := reloaded.Snapshot().Journey; j == nil || !j.Ended || len(j.Points) != 1 {
-		t.Fatalf("persisted journey not restored: %+v", j)
+	if err := s.Start("j2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddPoint("j2", Point{Lat: 5, Lon: 5}); err != nil {
+		t.Fatal(err)
 	}
 
-	// A late retry for the ended journey is kept but does not reopen it.
+	// A late retry for the ended journey lands in that journey and does not reopen it.
 	if err := s.AddPoint("j1", Point{Lat: 2, Lon: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if j := s.Snapshot().Journey; !j.Ended || len(j.Points) != 2 {
-		t.Fatalf("late point should not reopen journey: %+v", j)
-	}
-
-	if err := s.AddPoint("", Point{Lat: 5, Lon: 5}); err != nil {
+	// Retrying start for an older journey must not create a duplicate.
+	if err := s.Start("j1"); err != nil {
 		t.Fatal(err)
 	}
-	j := s.Snapshot().Journey
-	if j.ID == "j1" || j.Ended || len(j.Points) != 1 {
-		t.Fatalf("expected a fresh journey after stop, got %+v", j)
+	// Without an ID, points go to the active journey.
+	if err := s.AddPoint("", Point{Lat: 6, Lon: 6}); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, _ := newTestStore(t, path)
+	js := reloaded.Snapshot().Journeys
+	if len(js) != 2 {
+		t.Fatalf("got %d journeys, want 2: %+v", len(js), js)
+	}
+	if j := js[0]; j.ID != "j1" || !j.Ended || len(j.Points) != 2 {
+		t.Fatalf("first journey not kept intact: %+v", j)
+	}
+	if j := js[1]; j.ID != "j2" || j.Ended || len(j.Points) != 2 {
+		t.Fatalf("second journey wrong: %+v", j)
+	}
+
+	if _, err := reloaded.Stop(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.AddPoint("", Point{Lat: 7, Lon: 7}); err != nil {
+		t.Fatal(err)
+	}
+	js = reloaded.Snapshot().Journeys
+	if len(js) != 3 || !js[1].Ended || js[2].Ended || len(js[2].Points) != 1 {
+		t.Fatalf("expected a third journey after stop: %+v", js)
+	}
+}
+
+func TestOpenMigratesSingleJourneyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journey.json")
+	legacy := `{"id":"old","startedAt":"2026-01-01T00:00:00Z","ended":true,"points":[{"lat":1,"lon":2,"time":"2026-01-01T00:00:00Z","received":"2026-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestStore(t, path)
+	if err := s.AddPoint("new", Point{Lat: 3, Lon: 4}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _ := newTestStore(t, path)
+	js := reloaded.Snapshot().Journeys
+	if len(js) != 2 || js[0].ID != "old" || len(js[0].Points) != 1 || js[1].ID != "new" {
+		t.Fatalf("legacy journey not migrated: %+v", js)
 	}
 }
 
@@ -138,7 +186,10 @@ func TestHandlers(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
 		t.Fatal(err)
 	}
-	j := st.Journey
+	if len(st.Journeys) != 1 {
+		t.Fatalf("got %d journeys, want 1", len(st.Journeys))
+	}
+	j := st.Journeys[0]
 	if j.ID != "abc" || !j.Ended || len(j.Points) != 2 {
 		t.Fatalf("unexpected state: %+v", j)
 	}

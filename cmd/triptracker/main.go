@@ -22,7 +22,7 @@ func main() {
 		defaultAddr = ":" + port
 	}
 	addr := flag.String("addr", defaultAddr, "listen address")
-	dataPath := flag.String("data", "data/journey.json", "file used to persist the current journey (empty to disable)")
+	dataPath := flag.String("data", "data/journey.json", "file used to persist the journey history (empty to disable)")
 	flag.Parse()
 
 	token := os.Getenv("TRIPTRACKER_TOKEN")

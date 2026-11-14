@@ -1,18 +1,19 @@
 # triptracker
 
-Live journey tracking: a web map with your current location (blue pin) and journey history (orange pins), fed by an Android app that reports your position every minute.
+Live journey tracking: a web map with your current location (blue pin) and the history of all your journeys (orange pins, with green start/end pins), fed by an Android app that reports your position every minute.
 
 ## How it works
 
 | Part | What it does |
 | --- | --- |
-| `cmd/triptracker` | Go web server. It serves the live map and the location API, and saves the current journey to `data/journey.json`. |
+| `cmd/triptracker` | Go web server. It serves the live map and the location API, and saves every journey (the full history) to `data/journey.json`. |
 | `web/static` | Leaflet/OpenStreetMap page. It gets updates instantly over Server-Sent Events, with a 30-second polling fallback. |
 | `android/` | Lightweight Android app (plain Java, no AndroidX) that sends your location every minute. |
 
 On the map:
 - **Blue pin**: your latest location. Click it to get coordinates you can copy and paste (decimal and degrees/minutes/seconds) for emergency services.
-- **Semi-transparent orange pins joined by a line**: the journey so far.
+- **Semi-transparent orange pins joined by a line**: earlier locations. Each journey has its own line, and history is kept when you stop and start again.
+- **Green pins**: where each journey started, and where each deliberately stopped journey ended. Hover over a pin to see its time.
 - **Status banner**:
   - Until a stop signal arrives, it shows *"Last update Xm Ys ago"*. It turns amber after 2½ minutes and red after 10 minutes.
   - After a stop signal, it shows *"✅ Journey ended safely"*.
@@ -27,6 +28,8 @@ Then open `http://localhost:8080`. The phone must be able to reach the server, s
 - deploy it somewhere public behind HTTPS (recommended), or
 - use your LAN IP (for example `http://192.168.1.10:8080`).
 
+History is never deleted automatically. At one point per minute the file grows by about 0.3 MB per day of tracking (around 9 MB per 30 days). Data files written by older versions, which held only one journey, are migrated automatically. To clear the history, stop the server and delete the file.
+
 > `TRIPTRACKER_TOKEN` protects the endpoints that **write** data. The map itself is readable by anyone who has the URL.
 
 ### API
@@ -36,12 +39,12 @@ Write endpoints require `Authorization: Bearer <token>` (or `?token=`) when `TRI
 | Method & path | Body | Purpose |
 | --- | --- | --- |
 | `POST /api/location` | `{"lat":-33.86,"lon":151.21,"accuracy":8,"battery":80,"time":1767261540000,"journeyId":"abc"}` | Store a location and make it the new blue pin. Only `lat`/`lon` are required. `time` is unix milliseconds or RFC 3339. Form/query parameters also work. |
-| `POST /api/start` | `{"journeyId":"abc"}` | Start a new, empty journey. |
+| `POST /api/start` | `{"journeyId":"abc"}` | Start a new, empty journey. Earlier journeys are kept. |
 | `POST /api/stop` | `{"journeyId":"abc"}` | Mark the journey as deliberately ended. |
-| `GET /api/state` | | Current journey as JSON. |
+| `GET /api/state` | | All journeys as JSON: `{"journeys":[...],"serverTime":...}`, oldest first. The last one is the current journey. |
 | `GET /api/events` | | Server-Sent Events stream of state changes. |
 
-A location with a new `journeyId` (or with no ID after a stop) starts a new journey. Points that arrive late are sorted by when the fix was taken, and repeated sends of the same point are ignored.
+A location with a new `journeyId` (or with no ID after a stop) starts a new journey. A late retry for an earlier journey goes into that journey and does not reopen it. Points that arrive late are sorted by when the fix was taken, and repeated sends of the same point are ignored.
 
 ```sh
 curl -X POST -H "Authorization: Bearer $TRIPTRACKER_TOKEN" -d lat=-33.8688 -d lon=151.2093 http://localhost:8080/api/location

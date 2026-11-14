@@ -3,6 +3,7 @@
 
   const BLUE = "#1e6fe8";
   const ORANGE = "#f28c28";
+  const GREEN = "#2e9e44";
   const PIN_PATH = "M12 0C5.4 0 0 5.4 0 12c0 9 12 24 12 24s12-15 12-24C24 5.4 18.6 0 12 0z";
 
   // Live after this long without a location, the status turns amber, then red.
@@ -27,9 +28,10 @@
   };
   const blueIcon = pinIcon(BLUE, 32);
   const orangeIcon = pinIcon(ORANGE, 20);
+  const greenIcon = pinIcon(GREEN, 24);
 
   const historyLayer = L.layerGroup().addTo(map);
-  const route = L.polyline([], { color: ORANGE, weight: 3, opacity: 0.6 }).addTo(map);
+  const routeLayer = L.featureGroup().addTo(map);
   let blueMarker = null;
   let state = null;
   let clockOffset = 0; // serverTime - local time, so "ago" values ignore viewer clock skew
@@ -107,19 +109,41 @@
   function render(s) {
     state = s;
     clockOffset = Date.parse(s.serverTime) - Date.now();
-    const points = (s.journey && s.journey.points) || [];
-    const latest = points[points.length - 1];
-    const key = `${s.journey ? s.journey.id : ""}|${points.length}|${latest ? latest.time : ""}`;
+    const journeys = s.journeys || [];
+    // The blue pin is the newest known position, even if the current journey has no points yet.
+    const withPoints = journeys.filter((j) => j.points && j.points.length);
+    const lastJourney = withPoints[withPoints.length - 1];
+    const latest = lastJourney && lastJourney.points[lastJourney.points.length - 1];
+    const key = journeys.map((j) => `${j.id}:${(j.points || []).length}:${j.ended}`).join(",") +
+      `|${latest ? latest.time : ""}`;
 
     if (key !== renderedKey) {
       renderedKey = key;
       historyLayer.clearLayers();
-      points.slice(0, -1).forEach((p) => {
-        L.marker([p.lat, p.lon], { icon: orangeIcon, opacity: 0.5, keyboard: false })
-          .bindTooltip(formatTime(p.time))
-          .addTo(historyLayer);
+      routeLayer.clearLayers();
+      withPoints.forEach((j) => {
+        L.polyline(j.points.map((p) => [p.lat, p.lon]), { color: ORANGE, weight: 3, opacity: 0.6 })
+          .addTo(routeLayer);
+        const lastIdx = j.points.length - 1;
+        j.points.forEach((p, i) => {
+          if (p === latest) return;
+          const isStart = i === 0;
+          const isStop = j.ended && i === lastIdx;
+          let label = formatTime(p.time);
+          if (isStart && isStop) label = `Journey start & end · ${label}`;
+          else if (isStart) label = `Journey start · ${label}`;
+          else if (isStop) label = `Journey ended safely · ${label}`;
+          const green = isStart || isStop;
+          L.marker([p.lat, p.lon], {
+            icon: green ? greenIcon : orangeIcon,
+            opacity: green ? 0.8 : 0.5,
+            zIndexOffset: green ? 500 : 0,
+            keyboard: false,
+          })
+            .bindTooltip(label)
+            .addTo(historyLayer);
+        });
       });
-      route.setLatLngs(points.map((p) => [p.lat, p.lon]));
 
       if (latest) {
         const ll = [latest.lat, latest.lon];
@@ -131,8 +155,10 @@
           blueMarker.setLatLng(ll).setPopupContent(popupHTML(latest));
         }
         if (!fitted) {
+          // Start zoomed to the latest journey rather than the whole history.
           fitted = true;
-          if (points.length > 1) map.fitBounds(route.getBounds(), { padding: [60, 60], maxZoom: 16 });
+          const pts = lastJourney.points.map((p) => [p.lat, p.lon]);
+          if (pts.length > 1) map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 16 });
           else map.setView(ll, 16);
         } else if (!map.getBounds().contains(ll)) {
           map.panTo(ll);
@@ -156,7 +182,8 @@
       el.textContent = formatAgo(now() - Date.parse(el.dataset.ago));
     });
     if (!state) return;
-    const j = state.journey;
+    const journeys = state.journeys || [];
+    const j = journeys[journeys.length - 1];
     if (!j) {
       setStatus("waiting", "No journey yet", "Waiting for the first location…");
       return;
